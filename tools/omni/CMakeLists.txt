@@ -18,6 +18,7 @@ add_library(omni
             audition.h
             vision.cpp
             vision.h
+            vision-patch.h
             omni-impl.h
             token2wav/token2wav-impl.cpp
             token2wav/token2wav-impl.h
@@ -201,6 +202,12 @@ endif()
 # voxcpm2-cli build + smoke test (no weights). --help exits non-zero by design,
 # so assert on the usage banner instead of the exit code.
 if (LLAMA_BUILD_TESTS)
+    add_executable(test-vision-patch-mm test/test-vision-patch-mm.cpp)
+    target_link_libraries(test-vision-patch-mm PRIVATE ggml)
+    target_compile_features(test-vision-patch-mm PRIVATE cxx_std_17)
+    add_test(NAME test-vision-patch-mm COMMAND test-vision-patch-mm)
+    set_tests_properties(test-vision-patch-mm PROPERTIES LABELS "main;vision")
+
     add_test(
         NAME voxcpm2-cli-smoke
         COMMAND ${TARGET_VOXCPM2_CLI} --help
