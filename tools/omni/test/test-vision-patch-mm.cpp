@@ -1,4 +1,6 @@
-#include "../vision-patch.h"
+// Include the implementation to exercise its file-local packing helper and
+// actual input graph builder without adding a library interface for the test.
+#include "../vision.cpp"
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -42,23 +44,38 @@ static void test_projection(ggml_backend_t backend, ggml_type type, int ps, int 
     ggml_tensor * wrong_type = ggml_new_tensor_4d(ctx, GGML_TYPE_BF16, ps, ps, 3, outputs);
     check(!vision_patch_mm_supported(nx, ny, ps, 1, wrong_type), "unsupported weights must fall back");
 
-    ggml_tensor * input = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, nx, ny, 3);
-    ggml_set_input(input);
-    ggml_tensor * reference = ggml_conv_2d(ctx, weights, input, ps, ps, 0, 0, 1, 1);
-    const int patches = (nx / ps) * (ny / ps);
-    reference = ggml_reshape_2d(ctx, reference, patches, outputs);
-    reference = ggml_cont(ctx, ggml_transpose(ctx, reference));
-    if (bias) {
-        reference = ggml_add(ctx, reference, bias);
-    }
-    ggml_tensor * actual = vision_build_patch_mm(ctx, weights, bias, nx, ny, ps);
-    ggml_cgraph * graph = ggml_new_graph(ctx);
+    vision_context_params vision_params = {};
+    vision_ctx vision(vision_params);
+    vision.model.hparams = {};
+    vision.model.hparams.patch_size = ps;
+    vision.model.hparams.n_embd = outputs;
+    vision.model.hparams.n_head = 1;
+    vision.model.patch_embeddings = weights;
+    vision.model.patch_bias = bias;
+    vision.buf_compute_meta.resize(4 * 1024 * 1024);
+    vision_image_f32 image = { nx, ny, {} };
+    vision_graph builder(&vision, image);
+    check(builder.patch_mm, "opt-in packed projection not selected");
+
+    builder.patch_mm = false;
+    ggml_tensor * reference = builder.build_inp();
+    ggml_tensor * input = ggml_get_tensor(builder.ctx0, "inp_raw");
+    check(input != nullptr, "convolution graph input missing");
+    ggml_set_name(input, "inp_conv");
+    builder.patch_mm = true;
+    ggml_tensor * actual = builder.build_inp();
+    check(actual->ne[0] == outputs && actual->ne[1] == (nx / ps) * (ny / ps),
+          "unexpected projection output layout");
+    ggml_cgraph * graph = builder.gf;
     ggml_build_forward_expand(graph, reference);
     ggml_build_forward_expand(graph, actual);
     ggml_tensor * packed_input = ggml_graph_get_tensor(graph, "inp_raw");
     check(packed_input != nullptr, "packed graph input missing");
     ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
-    check(buffer != nullptr, "backend allocation failed");
+    check(buffer != nullptr, "weight allocation failed");
+    ggml_backend_buffer_t graph_buffer = ggml_backend_alloc_ctx_tensors(builder.ctx0, backend);
+    check(graph_buffer != nullptr, "graph allocation failed");
+    const int patches = (nx / ps) * (ny / ps);
 
     std::vector<float> rgb((size_t) nx * ny * 3);
     std::vector<float> chw(rgb.size());
@@ -106,11 +123,17 @@ static void test_projection(ggml_backend_t backend, ggml_type type, int ps, int 
     }
     std::printf("%s patch=%d image=%dx%d channels=%d bias=%d max_abs_error=%g\n",
                 ggml_type_name(type), ps, nx, ny, outputs, with_bias, max_error);
+    ggml_backend_buffer_free(graph_buffer);
     ggml_backend_buffer_free(buffer);
     ggml_free(ctx);
 }
 
 int main(int argc, char ** argv) {
+#ifdef _WIN32
+    check(_putenv_s("OMNI_VPM_PATCHMM", "1") == 0, "could not enable packed projection");
+#else
+    check(setenv("OMNI_VPM_PATCHMM", "1", 1) == 0, "could not enable packed projection");
+#endif
     ggml_backend_load_all();
     const char * name = argc > 1 ? argv[1] : "CPU";
     ggml_backend_t backend = ggml_backend_init_by_name(name, nullptr);

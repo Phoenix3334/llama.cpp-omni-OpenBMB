@@ -18,7 +18,6 @@ add_library(omni
             audition.h
             vision.cpp
             vision.h
-            vision-patch.h
             omni-impl.h
             token2wav/token2wav-impl.cpp
             token2wav/token2wav-impl.h
