@@ -735,7 +735,10 @@ struct vision_graph {
             ggml_set_name(inp_raw, "inp_raw");
             ggml_set_input(inp_raw);
             ggml_tensor * weights = ggml_reshape_2d(ctx0, model.patch_embeddings, k_dim, model.patch_embeddings->ne[3]);
-            ggml_tensor * inp = ggml_mul_mat(ctx0, weights, inp_raw);
+            // Match the im2col activation precision of the convolution path.
+            ggml_tensor * patches = model.patch_embeddings->type == GGML_TYPE_F16
+                ? ggml_cast(ctx0, inp_raw, GGML_TYPE_F16) : inp_raw;
+            ggml_tensor * inp = ggml_mul_mat(ctx0, weights, patches);
             if (model.patch_bias) {
                 inp = ggml_add(ctx0, inp, model.patch_bias);
                 cb(inp, "patch_bias", -1);
